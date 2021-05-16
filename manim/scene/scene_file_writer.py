@@ -527,6 +527,7 @@ class SceneFileWriter(object):
                 config["ffmpeg_loglevel"].lower(),
                 "-metadata",
                 f"comment=Rendered with Manim Community v{__version__}",
+                "--bitexact",
                 # "-shortest",
                 temp_file_path,
             ]
