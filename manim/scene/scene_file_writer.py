@@ -377,10 +377,9 @@ class SceneFileWriter(object):
             "-i",
             "-",  # The input comes from a pipe
             "-an",  # Tells FFMPEG not to expect any audio
+            "-bitexact",
             "-loglevel",
-            config["ffmpeg_loglevel"].lower(),
-            "-metadata",
-            f"comment=Rendered with Manim Community v{__version__}",
+            "debug",
         ]
         if config.renderer == "opengl":
             command += ["-vf", "vflip"]
@@ -468,7 +467,7 @@ class SceneFileWriter(object):
             "-i",
             file_list,
             "-loglevel",
-            config["ffmpeg_loglevel"].lower(),
+            "debug",
             "-bitexact",
             "-nostdin",
         ]
