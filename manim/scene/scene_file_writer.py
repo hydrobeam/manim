@@ -511,6 +511,7 @@ class SceneFileWriter(object):
                 "-i",
                 sound_file_path,
                 "-y",  # overwrite output file if it exists
+                "-bitexact",
                 "-c:v",
                 "copy",
                 "-c:a",
@@ -527,7 +528,6 @@ class SceneFileWriter(object):
                 config["ffmpeg_loglevel"].lower(),
                 "-metadata",
                 f"comment=Rendered with Manim Community v{__version__}",
-                "--bitexact",
                 # "-shortest",
                 temp_file_path,
             ]
