@@ -58,7 +58,7 @@ class CameraFrame(OpenGLMobject):
 
     def refresh_rotation_matrix(self):
         # Rotate based on camera orientation
-        theta, phi, gamma = self.get_euler_angles()
+        theta, phi, gamma = self.euler_angles
         quat = quaternion_mult(
             quaternion_from_angle_axis(theta, OUT, axis_normalized=True),
             quaternion_from_angle_axis(phi, RIGHT, axis_normalized=True),
@@ -196,13 +196,16 @@ class Camera(CameraFrame):
             *Color(self.background_color).get_rgb(),
             self.background_opacity,
         ]
-        super().__init__(**kwargs)
+        self.init_frame(kwargs)
         self.init_context(ctx)
         self.init_shaders()
         self.init_textures()
         self.init_light_source()
         self.refresh_perspective_uniforms()
         self.static_mobject_to_render_group_list = {}
+
+    def init_frame(self, kwargs):
+        self.frame = CameraFrame(**kwargs)
 
     def init_context(self, ctx=None):
         if ctx is None:

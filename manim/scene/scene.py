@@ -13,7 +13,7 @@ from manim.animation.animation import prepare_animation
 from manim.animation.transform import MoveToTarget
 from manim.camera.camera import Camera
 from manim.constants import DEFAULT_WAIT_TIME
-from manim.event_handler.event_dispatcher import EVENT_DISPATCHER
+from manim.event_handler import EVENT_DISPATCHER
 from manim.event_handler.event_type import EventType
 from manim.mobject.opengl_mobject import OpenGLMobject, OpenGLPoint
 from manim.scene.scene_file_writer import SceneFileWriter
@@ -39,10 +39,21 @@ class Scene:
         linger_after_completion=True,
         **kwargs,
     ):
-        if self.preview:
-            from manim.renderer.opengl_renderer import Window
+        self.camera_class = camera_class
+        self.camera_config = camera_config
+        self.file_writer_config = file_writer_config
+        self.skip_animations = skip_animations
+        self.always_update_mobjects = always_update_mobjects
+        self.start_at_animation_number = start_at_animation_number
+        self.end_at_animation_number = end_at_animation_number
+        self.leave_progress_bars = leave_progress_bars
+        self.preview = preview
+        self.linger_after_completion = linger_after_completion
 
-            self.window = Window(scene=self, **self.window_config)
+        if self.preview:
+            from manim.renderer.opengl_renderer_window import Window
+
+            self.window = Window(scene=self)
             self.camera_config["ctx"] = self.window.ctx
         else:
             self.window = None
@@ -58,11 +69,6 @@ class Scene:
         # Items associated with interaction
         self.mouse_point = OpenGLPoint()
         self.mouse_drag_point = OpenGLPoint()
-
-        # Much nicer to work with deterministic scenes
-        if self.random_seed is not None:
-            random.seed(self.random_seed)
-            np.random.seed(self.random_seed)
 
     def run(self):
         self.virtual_animation_start_time = 0
