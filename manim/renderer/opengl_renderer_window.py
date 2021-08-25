@@ -3,7 +3,7 @@ from moderngl_window.context.pyglet.window import Window as PygletWindow
 from moderngl_window.timers.clock import Timer
 from screeninfo import get_monitors
 
-from .. import __version__, config
+from manim import config
 
 
 class Window(PygletWindow):
@@ -13,92 +13,36 @@ class Window(PygletWindow):
     vsync = True
     cursor = True
 
-    def __init__(self, scene, size=config.window_size, **kwargs):
-        monitors = get_monitors()
-        mon_index = config.window_monitor
-        monitor = monitors[min(mon_index, len(monitors) - 1)]
-
-        if size == "default":
-            # make window_width half the width of the monitor
-            # but make it full screen if --fullscreen
-
-            window_width = monitor.width
-            if not config.fullscreen:
-                window_width //= 2
-
-            #  by default window_height = 9/16 * window_width
-            window_height = int(
-                window_width * config.frame_height // config.frame_width
-            )
-            size = (window_width, window_height)
-        else:
-            size = tuple(size)
-
+    def __init__(self, scene, size=(1280, 720), **kwargs):
         super().__init__(size=size)
 
-        self.title = f"Manim Community {__version__}"
-        self.size = size
         self.scene = scene
+        self.pressed_keys = set()
+        self.title = str(scene)
+        self.size = size
 
         mglw.activate_context(window=self)
         self.timer = Timer()
         self.config = mglw.WindowConfig(ctx=self.ctx, wnd=self, timer=self.timer)
         self.timer.start()
 
-        self.swap_buffers()
-
-        initial_position = self.find_initial_position(size, monitor)
+        # No idea why, but when self.position is set once
+        # it sometimes doesn't actually change the position
+        # to the specified tuple on the rhs, but doing it
+        # twice seems to make it work.  ¯\_(ツ)_/¯
+        initial_position = self.find_initial_position(size)
+        self.position = initial_position
         self.position = initial_position
 
-    # Delegate event handling to scene.
-    def on_mouse_motion(self, x, y, dx, dy):
-        super().on_mouse_motion(x, y, dx, dy)
-        point = self.scene.pixel_coords_to_space_coords(x, y)
-        d_point = self.scene.pixel_coords_to_space_coords(dx, dy, relative=True)
-        self.scene.scene.on_mouse_motion(point, d_point)
-
-    def on_mouse_scroll(self, x, y, x_offset: float, y_offset: float):
-        super().on_mouse_scroll(x, y, x_offset, y_offset)
-        point = self.scene.pixel_coords_to_space_coords(x, y)
-        offset = self.scene.pixel_coords_to_space_coords(
-            x_offset, y_offset, relative=True
-        )
-        self.scene.scene.on_mouse_scroll(point, offset)
-
-    def on_key_press(self, symbol, modifiers):
-        self.scene.pressed_keys.add(symbol)
-        super().on_key_press(symbol, modifiers)
-        self._set_fullscreen.scene.on_key_press(symbol, modifiers)
-
-    def on_key_release(self, symbol, modifiers):
-        if symbol in self.scene.pressed_keys:
-            self.scene.pressed_keys.remove(symbol)
-        super().on_key_release(symbol, modifiers)
-        self.scene.scene.on_key_release(symbol, modifiers)
-
-    def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
-        super().on_mouse_drag(x, y, dx, dy, buttons, modifiers)
-        point = self.scene.pixel_coords_to_space_coords(x, y)
-        d_point = self.scene.pixel_coords_to_space_coords(dx, dy, relative=True)
-        self.scene.scene.on_mouse_drag(point, d_point, buttons, modifiers)
-
-    def find_initial_position(self, size, monitor):
+    def find_initial_position(self, size):
         custom_position = config.window_position
+        monitors = get_monitors()
+        mon_index = config.window_monitor
+        monitor = monitors[min(mon_index, len(monitors) - 1)]
         window_width, window_height = size
         # Position might be specified with a string of the form
         # x,y for integers x and y
-        if len(custom_position) == 1:
-            raise ValueError(
-                "window_position must specify both Y and X positions (Y/X -> UR). Also accepts LEFT/RIGHT/ORIGIN/UP/DOWN."
-            )
-        # in the form Y/X (UR)
-        if custom_position == "LEFT" or custom_position == "RIGHT":
-            custom_position = "O" + custom_position[0]
-        elif custom_position == "UP" or custom_position == "DOWN":
-            custom_position = custom_position[0] + "O"
-        elif custom_position == "ORIGIN":
-            custom_position = "O" * 2
-        elif "," in custom_position:
+        if "," in custom_position:
             return tuple(map(int, custom_position.split(",")))
 
         # Alternatively, it might be specified with a string like
@@ -106,18 +50,68 @@ class Window(PygletWindow):
         char_to_n = {"L": 0, "U": 0, "O": 1, "R": 2, "D": 2}
         width_diff = monitor.width - window_width
         height_diff = monitor.height - window_height
-
         return (
             monitor.x + char_to_n[custom_position[1]] * width_diff // 2,
             -monitor.y + char_to_n[custom_position[0]] * height_diff // 2,
         )
 
-    def on_mouse_press(self, x, y, button, modifiers):
-        super().on_mouse_press(x, y, button, modifiers)
-        point = self.scene.pixel_coords_to_space_coords(x, y)
-        mouse_button_map = {
-            1: "LEFT",
-            2: "MOUSE",
-            4: "RIGHT",
-        }
-        self.scene.scene.on_mouse_press(point, mouse_button_map[button], modifiers)
+    # Delegate event handling to scene
+    def pixel_coords_to_space_coords(self, px, py, relative=False):
+        return self.scene.camera.pixel_coords_to_space_coords(px, py, relative)
+
+    def on_mouse_motion(self, x, y, dx, dy):
+        super().on_mouse_motion(x, y, dx, dy)
+        point = self.pixel_coords_to_space_coords(x, y)
+        d_point = self.pixel_coords_to_space_coords(dx, dy, relative=True)
+        self.scene.on_mouse_motion(point, d_point)
+
+    def on_mouse_drag(self, x, y, dx, dy, buttons, modifiers):
+        super().on_mouse_drag(x, y, dx, dy, buttons, modifiers)
+        point = self.pixel_coords_to_space_coords(x, y)
+        d_point = self.pixel_coords_to_space_coords(dx, dy, relative=True)
+        self.scene.on_mouse_drag(point, d_point, buttons, modifiers)
+
+    def on_mouse_press(self, x: int, y: int, button, mods):
+        super().on_mouse_press(x, y, button, mods)
+        point = self.pixel_coords_to_space_coords(x, y)
+        self.scene.on_mouse_press(point, button, mods)
+
+    def on_mouse_release(self, x: int, y: int, button, mods):
+        super().on_mouse_release(x, y, button, mods)
+        point = self.pixel_coords_to_space_coords(x, y)
+        self.scene.on_mouse_release(point, button, mods)
+
+    def on_mouse_scroll(self, x, y, x_offset: float, y_offset: float):
+        super().on_mouse_scroll(x, y, x_offset, y_offset)
+        point = self.pixel_coords_to_space_coords(x, y)
+        offset = self.pixel_coords_to_space_coords(x_offset, y_offset, relative=True)
+        self.scene.on_mouse_scroll(point, offset)
+
+    def on_key_press(self, symbol, modifiers):
+        self.pressed_keys.add(symbol)  # Modifiers?
+        super().on_key_press(symbol, modifiers)
+        self.scene.on_key_press(symbol, modifiers)
+
+    def on_key_release(self, symbol, modifiers):
+        self.pressed_keys.difference_update({symbol})  # Modifiers?
+        super().on_key_release(symbol, modifiers)
+        self.scene.on_key_release(symbol, modifiers)
+
+    def on_resize(self, width: int, height: int):
+        super().on_resize(width, height)
+        self.scene.on_resize(width, height)
+
+    def on_show(self):
+        super().on_show()
+        self.scene.on_show()
+
+    def on_hide(self):
+        super().on_hide()
+        self.scene.on_hide()
+
+    def on_close(self):
+        super().on_close()
+        self.scene.on_close()
+
+    def is_key_pressed(self, symbol):
+        return symbol in self.pressed_keys

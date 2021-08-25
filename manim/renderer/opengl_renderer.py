@@ -6,6 +6,7 @@ import numpy as np
 from PIL import Image
 
 from manim import config
+from manim.camera.camera import Camera
 from manim.renderer.cairo_renderer import handle_play_like_call
 from manim.utils.caching import handle_caching_play
 from manim.utils.color import color_to_rgba
@@ -227,7 +228,7 @@ class OpenGLRenderer:
         self.animations_hashes = []
         self.num_plays = 0
 
-        self.camera = OpenGLCamera()
+        self.camera = Camera()
         self.pressed_keys = set()
 
         # Initialize texture map.

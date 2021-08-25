@@ -5,8 +5,9 @@ from pathlib import Path
 
 import moderngl
 import numpy as np
+import validators
 
-from .. import logger
+from manim import logger
 
 # Mobjects that should be rendered with
 # the same shader will be organized and
@@ -19,17 +20,23 @@ def get_shader_dir():
     return Path(__file__).parent / "shaders"
 
 
-def find_file(file_name, directories=None):
+def find_file(file_name, directories=None, extensions=None):
     # Check if what was passed in is already a valid path to a file
     if os.path.exists(file_name):
         return file_name
-    possible_paths = (os.path.join(directory, file_name) for directory in directories)
+
+    # Otherwise look in local file system
+    directories = directories or [""]
+    extensions = extensions or [""]
+    possible_paths = (
+        os.path.join(directory, file_name + extension)
+        for directory in directories
+        for extension in extensions
+    )
     for path in possible_paths:
         if os.path.exists(path):
             return path
-        else:
-            logger.debug(f"{path} does not exist.")
-    raise OSError(f"{file_name} not Found")
+    raise IOError(f"{file_name} not Found")
 
 
 class ShaderWrapper:
@@ -47,8 +54,8 @@ class ShaderWrapper:
         self.vert_indices = vert_indices
         self.vert_attributes = vert_data.dtype.names
         self.shader_folder = shader_folder
-        self.uniforms = uniforms or {}
-        self.texture_paths = texture_paths or {}
+        self.uniforms = uniforms or dict()
+        self.texture_paths = texture_paths or dict()
         self.depth_test = depth_test
         self.render_primitive = str(render_primitive)
         self.init_program_code()
@@ -102,8 +109,10 @@ class ShaderWrapper:
     def create_program_id(self):
         return hash(
             "".join(
-                self.program_code[f"{name}_shader"] or ""
-                for name in ("vertex", "geometry", "fragment")
+                (
+                    self.program_code[f"{name}_shader"] or ""
+                    for name in ("vertex", "geometry", "fragment")
+                )
             )
         )
 
@@ -155,6 +164,7 @@ class ShaderWrapper:
 filename_to_code_map = {}
 
 
+# @profile
 def get_shader_code_from_file(filename):
     if not filename:
         return None
@@ -165,11 +175,12 @@ def get_shader_code_from_file(filename):
         filepath = find_file(
             filename,
             directories=[get_shader_dir(), "/"],
+            extensions=[],
         )
-    except OSError:
+    except IOError:
         return None
 
-    with open(filepath) as f:
+    with open(filepath, "r") as f:
         result = f.read()
 
     # To share functionality between shaders, some functions are read in

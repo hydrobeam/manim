@@ -26,6 +26,8 @@ import numpy as np
 from colour import Color
 
 from ..utils.bezier import interpolate
+from ..utils.color import *
+from ..utils.iterables import resize_with_interpolation
 from ..utils.simple_functions import clip_in_place
 from ..utils.space_ops import normalize
 
@@ -461,3 +463,25 @@ def get_shaded_rgb(
     result = rgb + factor
     clip_in_place(rgb + factor, 0, 1)
     return result
+
+
+def get_colormap_list(map_name="viridis", n_colors=9):
+    """
+    Options for map_name:
+    3b1b_colormap
+    magma
+    inferno
+    plasma
+    viridis
+    cividis
+    twilight
+    twilight_shifted
+    turbo
+    """
+    from matplotlib.cm import get_cmap
+
+    if map_name == "3b1b_colormap":
+        rgbs = [color_to_rgb(color) for color in [BLUE_E, GREEN, YELLOW, RED]]
+    else:
+        rgbs = get_cmap(map_name).colors  # Make more general?
+    return resize_with_interpolation(np.array(rgbs), n_colors)

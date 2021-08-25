@@ -3,21 +3,24 @@ import itertools as it
 import random
 import sys
 from functools import wraps
-from math import ceil
-from typing import Iterable, Optional, Tuple, Union
 
 import moderngl
 import numpy as np
 from colour import Color
 
-from .. import config
-from ..constants import *
-from ..utils.bezier import interpolate
-from ..utils.color import *
-from ..utils.config_ops import _Data, _Uniforms
-
-# from ..utils.iterables import batch_by_property
-from ..utils.iterables import (
+from manim.constants import *
+from manim.event_handler import EVENT_DISPATCHER
+from manim.event_handler.event_listener import EventListner
+from manim.event_handler.event_type import EventType
+from manim.renderer.shader_wrapper import ShaderWrapper, get_colormap_code
+from manim.utils.bezier import integer_interpolate, interpolate
+from manim.utils.color import (
+    color_gradient,
+    color_to_rgb,
+    get_colormap_list,
+    rgb_to_hex,
+)
+from manim.utils.iterables import (
     batch_by_property,
     list_update,
     listify,
@@ -26,13 +29,12 @@ from ..utils.iterables import (
     resize_preserving_order,
     resize_with_interpolation,
 )
-from ..utils.paths import straight_path
-from ..utils.simple_functions import get_parameters
-from ..utils.space_ops import (
-    angle_between_vectors,
-    normalize,
-    rotation_matrix_transpose,
-)
+from manim.utils.paths import straight_path
+from manim.utils.simple_functions import get_parameters
+from manim.utils.space_ops import angle_of_vector, rotation_matrix_transpose
+
+from ..utils.color import *
+from ..utils.config_ops import _Data, _Uniforms
 
 
 class OpenGLMobject:
@@ -73,8 +75,6 @@ class OpenGLMobject:
         # Must match in attributes of vert shader
         # Event listener
         listen_to_events=False,
-        model_matrix=None,
-        **kwargs,
     ):
         # getattr in case data/uniforms are already defined in parent classes.
         self.data = getattr(self, "data", {})
@@ -97,25 +97,18 @@ class OpenGLMobject:
         # Must match in attributes of vert shader
         # Event listener
         self.listen_to_events = listen_to_events
-
         self.submobjects = []
         self.parents = []
-        self.parent = None
         self.family = [self]
         self.locked_data_keys = set()
         self.needs_new_bounding_box = True
-        if model_matrix is None:
-            self.model_matrix = np.eye(4)
-        else:
-            self.model_matrix = model_matrix
 
         self.init_data()
         self.init_updaters()
-        # self.init_event_listners()
+        self.init_event_listners()
         self.init_points()
         self.init_colors()
-
-        self.shader_indices = None
+        self.init_shader_data()
 
         if self.depth_test:
             self.apply_depth_test()
@@ -152,120 +145,26 @@ class OpenGLMobject:
         # Borrowed from https://github.com/ManimCommunity/manim/
         return _AnimationBuilder(self)
 
-    @property
-    def width(self):
-        """The width of the mobject.
-
-        Returns
-        -------
-        :class:`float`
-
-        Examples
-        --------
-        .. manim:: WidthExample
-
-            class WidthExample(Scene):
-                def construct(self):
-                    decimal = DecimalNumber().to_edge(UP)
-                    rect = Rectangle(color=BLUE)
-                    rect_copy = rect.copy().set_stroke(GRAY, opacity=0.5)
-
-                    decimal.add_updater(lambda d: d.set_value(rect.width))
-
-                    self.add(rect_copy, rect, decimal)
-                    self.play(rect.animate.set(width=7))
-                    self.wait()
-
-        See also
-        --------
-        :meth:`length_over_dim`
-
-        """
-
-        # Get the length across the X dimension
-        return self.length_over_dim(0)
-
     # Only these methods should directly affect points
-    @width.setter
-    def width(self, value):
-        self.rescale_to_fit(value, 0, stretch=False)
-
-    @property
-    def height(self):
-        """The height of the mobject.
-
-        Returns
-        -------
-        :class:`float`
-
-        Examples
-        --------
-        .. manim:: HeightExample
-
-            class HeightExample(Scene):
-                def construct(self):
-                    decimal = DecimalNumber().to_edge(UP)
-                    rect = Rectangle(color=BLUE)
-                    rect_copy = rect.copy().set_stroke(GRAY, opacity=0.5)
-
-                    decimal.add_updater(lambda d: d.set_value(rect.height))
-
-                    self.add(rect_copy, rect, decimal)
-                    self.play(rect.animate.set(height=5))
-                    self.wait()
-
-        See also
-        --------
-        :meth:`length_over_dim`
-
-        """
-
-        # Get the length across the Y dimension
-        return self.length_over_dim(1)
-
-    @height.setter
-    def height(self, value):
-        self.rescale_to_fit(value, 1, stretch=False)
-
-    @property
-    def depth(self):
-        """The depth of the mobject.
-
-        Returns
-        -------
-        :class:`float`
-
-        See also
-        --------
-        :meth:`length_over_dim`
-
-        """
-
-        # Get the length across the Z dimension
-        return self.length_over_dim(2)
-
-    @depth.setter
-    def depth(self, value):
-        self.rescale_to_fit(value, 2, stretch=False)
 
     def resize_points(self, new_length, resize_func=resize_array):
-        if new_length != len(self.points):
-            self.points = resize_func(self.points, new_length)
+        if new_length != len(self.data["points"]):
+            self.data["points"] = resize_func(self.data["points"], new_length)
         self.refresh_bounding_box()
         return self
 
     def set_points(self, points):
-        if len(points) == len(self.points):
-            self.points[:] = points
+        if len(points) == len(self.data["points"]):
+            self.data["points"][:] = points
         elif isinstance(points, np.ndarray):
-            self.points = points.copy()
+            self.data["points"] = points.copy()
         else:
-            self.points = np.array(points)
+            self.data["points"] = np.array(points)
         self.refresh_bounding_box()
         return self
 
     def append_points(self, new_points):
-        self.points = np.vstack([self.points, new_points])
+        self.data["points"] = np.vstack([self.data["points"], new_points])
         self.refresh_bounding_box()
         return self
 
@@ -305,35 +204,36 @@ class OpenGLMobject:
 
     def match_points(self, mobject):
         self.set_points(mobject.get_points())
+        return self
 
     def get_points(self):
-        return self.points
+        return self.data["points"]
 
     def clear_points(self):
         self.resize_points(0)
 
     def get_num_points(self):
-        return len(self.points)
+        return len(self.data["points"])
 
     def get_all_points(self):
         if self.submobjects:
             return np.vstack([sm.get_points() for sm in self.get_family()])
         else:
-            return self.points
+            return self.get_points()
 
     def has_points(self):
         return self.get_num_points() > 0
 
     def get_bounding_box(self):
         if self.needs_new_bounding_box:
-            self.bounding_box = self.compute_bounding_box()
+            self.data["bounding_box"] = self.compute_bounding_box()
             self.needs_new_bounding_box = False
-        return self.bounding_box
+        return self.data["bounding_box"]
 
     def compute_bounding_box(self):
         all_points = np.vstack(
             [
-                self.points,
+                self.get_points(),
                 *(
                     mob.get_bounding_box()
                     for mob in self.get_family()[1:]
@@ -399,13 +299,9 @@ class OpenGLMobject:
     def family_members_with_points(self):
         return [m for m in self.get_family() if m.has_points()]
 
-    def add(self, *mobjects, update_parent=False):
-        if update_parent:
-            assert len(mobjects) == 1, "Can't set multiple parents."
-            mobjects[0].parent = self
-
+    def add(self, *mobjects):
         if self in mobjects:
-            raise Exception("Mobject cannot contain self")
+            raise Exception("OpenGLMobject cannot contain self")
         for mobject in mobjects:
             if mobject not in self.submobjects:
                 self.submobjects.append(mobject)
@@ -414,11 +310,7 @@ class OpenGLMobject:
         self.assemble_family()
         return self
 
-    def remove(self, *mobjects, update_parent=False):
-        if update_parent:
-            assert len(mobjects) == 1, "Can't remove multiple parents."
-            mobjects[0].parent = None
-
+    def remove(self, *mobjects):
         for mobject in mobjects:
             if mobject in self.submobjects:
                 self.submobjects.remove(mobject)
@@ -444,33 +336,6 @@ class OpenGLMobject:
         self.add(*submobject_list)
         return self
 
-    def invert(self, recursive=False):
-        """Inverts the list of :attr:`submobjects`.
-
-        Parameters
-        ----------
-        recursive
-            If ``True``, all submobject lists of this mobject's family are inverted.
-
-        Examples
-        --------
-
-        .. manim:: InvertSumobjectsExample
-
-            class InvertSumobjectsExample(Scene):
-                def construct(self):
-                    s = VGroup(*[Dot().shift(i*0.1*RIGHT) for i in range(-20,20)])
-                    s2 = s.copy()
-                    s2.invert()
-                    s2.shift(DOWN)
-                    self.play(Write(s), Write(s2))
-        """
-        if recursive:
-            for submob in self.submobjects:
-                submob.invert(recursive=True)
-        list.reverse(self.submobjects)
-        self.assemble_family()
-
     def digest_mobject_attrs(self):
         """
         Ensures all attributes which are mobjects are included
@@ -493,238 +358,48 @@ class OpenGLMobject:
 
     def arrange_in_grid(
         self,
-        rows: Optional[int] = None,
-        cols: Optional[int] = None,
-        buff: Union[float, Tuple[float, float]] = MED_SMALL_BUFF,
-        cell_alignment: np.ndarray = ORIGIN,
-        row_alignments: Optional[str] = None,  # "ucd"
-        col_alignments: Optional[str] = None,  # "lcr"
-        row_heights: Optional[Iterable[Optional[float]]] = None,
-        col_widths: Optional[Iterable[Optional[float]]] = None,
-        flow_order: str = "rd",
-        **kwargs,
-    ) -> "OpenGLMobject":
-        """Arrange submobjects in a grid.
+        n_rows=None,
+        n_cols=None,
+        buff=None,
+        h_buff=None,
+        v_buff=None,
+        buff_ratio=None,
+        h_buff_ratio=0.5,
+        v_buff_ratio=0.5,
+        aligned_edge=ORIGIN,
+        fill_rows_first=True,
+    ):
+        submobs = self.submobjects
+        if n_rows is None and n_cols is None:
+            n_rows = int(np.sqrt(len(submobs)))
+        if n_rows is None:
+            n_rows = len(submobs) // n_cols
+        if n_cols is None:
+            n_cols = len(submobs) // n_rows
 
-        Parameters
-        ----------
-        rows
-            The number of rows in the grid.
-        cols
-            The number of columns in the grid.
-        buff
-            The gap between grid cells. To specify a different buffer in the horizontal and
-            vertical directions, a tuple of two values can be given - ``(row, col)``.
-        cell_alignment
-            The way each submobject is aligned in its grid cell.
-        row_alignments
-            The vertical alignment for each row (top to bottom). Accepts the following characters: ``"u"`` -
-            up, ``"c"`` - center, ``"d"`` - down.
-        col_alignments
-            The horizontal alignment for each column (left to right). Accepts the following characters ``"l"`` - left,
-            ``"c"`` - center, ``"r"`` - right.
-        row_heights
-            Defines a list of heights for certain rows (top to bottom). If the list contains
-            ``None``, the corresponding row will fit its height automatically based
-            on the highest element in that row.
-        col_widths
-            Defines a list of widths for certain columns (left to right). If the list contains ``None``, the
-            corresponding column will fit its width automatically based on the widest element in that column.
-        flow_order
-            The order in which submobjects fill the grid. Can be one of the following values:
-            "rd", "dr", "ld", "dl", "ru", "ur", "lu", "ul". ("rd" -> fill rightwards then downwards)
-
-        Returns
-        -------
-        Mobject
-            The mobject.
-
-        NOTES
-        -----
-
-        If only one of ``cols`` and ``rows`` is set implicitly, the other one will be chosen big
-        enough to fit all submobjects. If neither is set, they will be chosen to be about the same,
-        tending towards ``cols`` > ``rows`` (simply because videos are wider than they are high).
-
-        If both ``cell_alignment`` and ``row_alignments`` / ``col_alignments`` are
-        defined, the latter has higher priority.
-
-
-        Raises
-        ------
-        ValueError
-            If ``rows`` and ``cols`` are too small to fit all submobjects.
-        ValueError
-            If :code:`cols`, :code:`col_alignments` and :code:`col_widths` or :code:`rows`,
-            :code:`row_alignments` and :code:`row_heights` have mismatching sizes.
-
-        Examples
-        --------
-        .. manim:: ExampleBoxes
-            :save_last_frame:
-
-            class ExampleBoxes(Scene):
-                def construct(self):
-                    boxes=VGroup(*[Square() for s in range(0,6)])
-                    boxes.arrange_in_grid(rows=2, buff=0.1)
-                    self.add(boxes)
-
-
-        .. manim:: ArrangeInGrid
-            :save_last_frame:
-
-            class ArrangeInGrid(Scene):
-                def construct(self):
-                    #Add some numbered boxes:
-                    np.random.seed(3)
-                    boxes = VGroup(*[
-                        Rectangle(WHITE, np.random.random()+.5, np.random.random()+.5).add(Text(str(i+1)).scale(0.5))
-                        for i in range(22)
-                    ])
-                    self.add(boxes)
-
-                    boxes.arrange_in_grid(
-                        buff=(0.25,0.5),
-                        col_alignments="lccccr",
-                        row_alignments="uccd",
-                        col_widths=[2, *[None]*4, 2],
-                        flow_order="dr"
-                    )
-
-
-        """
-        from .geometry import Line
-
-        mobs = self.submobjects.copy()
-        start_pos = self.get_center()
-
-        # get cols / rows values if given (implicitly)
-        def init_size(num, alignments, sizes):
-            if num is not None:
-                return num
-            if alignments is not None:
-                return len(alignments)
-            if sizes is not None:
-                return len(sizes)
-
-        cols = init_size(cols, col_alignments, col_widths)
-        rows = init_size(rows, row_alignments, row_heights)
-
-        # calculate rows cols
-        if rows is None and cols is None:
-            cols = ceil(np.sqrt(len(mobs)))
-            # make the grid as close to quadratic as possible.
-            # choosing cols first can results in cols>rows.
-            # This is favored over rows>cols since in general
-            # the sceene is wider than high.
-        if rows is None:
-            rows = ceil(len(mobs) / cols)
-        if cols is None:
-            cols = ceil(len(mobs) / rows)
-        if rows * cols < len(mobs):
-            raise ValueError("Too few rows and columns to fit all submobjetcs.")
-        # rows and cols are now finally valid.
-
-        if isinstance(buff, tuple):
-            buff_x = buff[0]
-            buff_y = buff[1]
+        if buff is not None:
+            h_buff = buff
+            v_buff = buff
         else:
-            buff_x = buff_y = buff
+            if buff_ratio is not None:
+                v_buff_ratio = buff_ratio
+                h_buff_ratio = buff_ratio
+            if h_buff is None:
+                h_buff = h_buff_ratio * self[0].get_width()
+            if v_buff is None:
+                v_buff = v_buff_ratio * self[0].get_height()
 
-        # Initialize alignments correctly
-        def init_alignments(alignments, num, mapping, name, dir):
-            if alignments is None:
-                # Use cell_alignment as fallback
-                return [cell_alignment * dir] * num
-            if len(alignments) != num:
-                raise ValueError(f"{name}_alignments has a mismatching size.")
-            alignments = list(alignments)
-            for i in range(num):
-                alignments[i] = mapping[alignments[i]]
-            return alignments
+        x_unit = h_buff + max([sm.get_width() for sm in submobs])
+        y_unit = v_buff + max([sm.get_height() for sm in submobs])
 
-        row_alignments = init_alignments(
-            row_alignments, rows, {"u": UP, "c": ORIGIN, "d": DOWN}, "row", RIGHT
-        )
-        col_alignments = init_alignments(
-            col_alignments, cols, {"l": LEFT, "c": ORIGIN, "r": RIGHT}, "col", UP
-        )
-        # Now row_alignment[r] + col_alignment[c] is the alignment in cell [r][c]
-
-        mapper = {
-            "dr": lambda r, c: (rows - r - 1) + c * rows,
-            "dl": lambda r, c: (rows - r - 1) + (cols - c - 1) * rows,
-            "ur": lambda r, c: r + c * rows,
-            "ul": lambda r, c: r + (cols - c - 1) * rows,
-            "rd": lambda r, c: (rows - r - 1) * cols + c,
-            "ld": lambda r, c: (rows - r - 1) * cols + (cols - c - 1),
-            "ru": lambda r, c: r * cols + c,
-            "lu": lambda r, c: r * cols + (cols - c - 1),
-        }
-        if flow_order not in mapper:
-            raise ValueError(
-                'flow_order must be one of the following values: "dr", "rd", "ld" "dl", "ru", "ur", "lu", "ul".'
-            )
-        flow_order = mapper[flow_order]
-
-        # Reverse row_alignments and row_heights. Necessary since the
-        # grid filling is handled bottom up for simplicity reasons.
-        def reverse(maybe_list):
-            if maybe_list is not None:
-                maybe_list = list(maybe_list)
-                maybe_list.reverse()
-                return maybe_list
-
-        row_alignments = reverse(row_alignments)
-        row_heights = reverse(row_heights)
-
-        placeholder = OpenGLMobject()
-        # Used to fill up the grid temporarily, doesn't get added to the scene.
-        # In this case a Mobject is better than None since it has width and height
-        # properties of 0.
-
-        mobs.extend([placeholder] * (rows * cols - len(mobs)))
-        grid = [[mobs[flow_order(r, c)] for c in range(cols)] for r in range(rows)]
-
-        measured_heigths = [
-            max(grid[r][c].height for c in range(cols)) for r in range(rows)
-        ]
-        measured_widths = [
-            max(grid[r][c].width for r in range(rows)) for c in range(cols)
-        ]
-
-        # Initialize row_heights / col_widths correctly using measurements as fallback
-        def init_sizes(sizes, num, measures, name):
-            if sizes is None:
-                sizes = [None] * num
-            if len(sizes) != num:
-                raise ValueError(f"{name} has a mismatching size.")
-            return [
-                sizes[i] if sizes[i] is not None else measures[i] for i in range(num)
-            ]
-
-        heights = init_sizes(row_heights, rows, measured_heigths, "row_heights")
-        widths = init_sizes(col_widths, cols, measured_widths, "col_widths")
-
-        x, y = 0, 0
-        for r in range(rows):
-            x = 0
-            for c in range(cols):
-                if grid[r][c] is not placeholder:
-                    alignment = row_alignments[r] + col_alignments[c]
-                    line = Line(
-                        x * RIGHT + y * UP,
-                        (x + widths[c]) * RIGHT + (y + heights[r]) * UP,
-                    )
-                    # Use a mobject to avoid rewriting align inside
-                    # box code that Mobject.move_to(Mobject) already
-                    # includes.
-
-                    grid[r][c].move_to(line, alignment)
-                x += widths[c] + buff_x
-            y += heights[r] + buff_y
-
-        self.move_to(start_pos)
+        for index, sm in enumerate(submobs):
+            if fill_rows_first:
+                x, y = index % n_cols, index // n_cols
+            else:
+                x, y = index // n_rows, index % n_rows
+            sm.move_to(ORIGIN, aligned_edge)
+            sm.shift(x * x_unit * RIGHT + y * y_unit * DOWN)
+        self.center()
         return self
 
     def get_grid(self, n_rows, n_cols, height=None, **kwargs):
@@ -750,22 +425,11 @@ class OpenGLMobject:
             for submob in self.submobjects:
                 submob.shuffle(recurse=True)
         random.shuffle(self.submobjects)
-        self.assemble_family()
         return self
 
     # Copying
 
-    def copy(self, shallow: bool = False):
-        """Copies the mobject.
-
-        Parameters
-        ----------
-        shallow
-            Controls whether a shallow copy is returned.
-        """
-        if not shallow:
-            return self.deepcopy()
-
+    def copy(self):
         # TODO, either justify reason for shallow copy, or
         # remove this redundancy everywhere
         # return self.deepcopy()
@@ -783,7 +447,7 @@ class OpenGLMobject:
         copy_mobject.uniforms = dict(self.uniforms)
 
         copy_mobject.submobjects = []
-        copy_mobject.add(*(sm.copy() for sm in self.submobjects))
+        copy_mobject.add(*[sm.copy() for sm in self.submobjects])
         copy_mobject.match_updaters(self)
 
         copy_mobject.needs_new_bounding_box = self.needs_new_bounding_box
@@ -799,8 +463,8 @@ class OpenGLMobject:
                 setattr(copy_mobject, attr, value.copy())
             if isinstance(value, np.ndarray):
                 setattr(copy_mobject, attr, value.copy())
-            # if isinstance(value, ShaderWrapper):
-            #     setattr(copy_mobject, attr, value.copy())
+            if isinstance(value, ShaderWrapper):
+                setattr(copy_mobject, attr, value.copy())
         return copy_mobject
 
     def deepcopy(self):
@@ -864,7 +528,7 @@ class OpenGLMobject:
         return self.time_based_updaters + self.non_time_updaters
 
     def get_family_updaters(self):
-        return list(it.chain(*(sm.get_updaters() for sm in self.get_family())))
+        return list(it.chain(*[sm.get_updaters() for sm in self.get_family()]))
 
     def add_updater(self, update_function, index=None, call_updater=True):
         if "dt" in get_parameters(update_function):
@@ -879,7 +543,7 @@ class OpenGLMobject:
 
         self.refresh_has_updater_status()
         if call_updater:
-            self.update()
+            self.update(dt=0)
         return self
 
     def remove_updater(self, update_function):
@@ -936,7 +600,9 @@ class OpenGLMobject:
         )
         return self
 
-    def scale(self, scale_factor, **kwargs):
+    def scale(
+        self, scale_factor, min_scale_factor=1e-8, about_point=None, about_edge=ORIGIN
+    ):
         """
         Default behavior is to scale about the center of the mobject.
         The argument about_edge can be a vector, indicating which side of
@@ -946,10 +612,21 @@ class OpenGLMobject:
         Otherwise, if about_point is given a value, scaling is done with
         respect to that point.
         """
+        scale_factor = max(scale_factor, min_scale_factor)
+        for mob in self.get_family():
+            mob._handle_scale_side_effects(scale_factor)
         self.apply_points_function(
-            lambda points: scale_factor * points, works_on_bounding_box=True, **kwargs
+            lambda points: scale_factor * points,
+            about_point=about_point,
+            about_edge=about_edge,
+            works_on_bounding_box=True,
         )
         return self
+
+    def _handle_scale_side_effects(self, scale_factor):
+        # In case subclasses, such as DecimalNumber, need to make
+        # any other changes when the size gets altered
+        pass
 
     def stretch(self, factor, dim, **kwargs):
         def func(points):
@@ -962,12 +639,7 @@ class OpenGLMobject:
     def rotate_about_origin(self, angle, axis=OUT):
         return self.rotate(angle, axis, about_point=ORIGIN)
 
-    def rotate(
-        self,
-        angle,
-        axis=OUT,
-        **kwargs,
-    ):
+    def rotate(self, angle, axis=OUT, **kwargs):
         rot_matrix_T = rotation_matrix_transpose(angle, axis)
         self.apply_points_function(
             lambda points: np.dot(points, rot_matrix_T), **kwargs
@@ -1015,17 +687,6 @@ class OpenGLMobject:
 
         return self.apply_function(R3_func)
 
-    def hierarchical_model_matrix(self):
-        if self.parent is None:
-            return self.model_matrix
-
-        model_matrices = [self.model_matrix]
-        current_object = self
-        while current_object.parent is not None:
-            model_matrices.append(current_object.parent.model_matrix)
-            current_object = current_object.parent
-        return np.linalg.multi_dot(list(reversed(model_matrices)))
-
     def wag(self, direction=RIGHT, axis=DOWN, wag_factor=1.0):
         for mob in self.family_members_with_points():
             alphas = np.dot(mob.get_points(), np.transpose(axis))
@@ -1052,11 +713,7 @@ class OpenGLMobject:
         Direction just needs to be a vector pointing towards side or
         corner in the 2d plane.
         """
-        target_point = np.sign(direction) * (
-            config["frame_x_radius"],
-            config["frame_y_radius"],
-            0,
-        )
+        target_point = np.sign(direction) * (FRAME_X_RADIUS, FRAME_Y_RADIUS, 0)
         point_to_align = self.get_bounding_box_point(direction)
         shift_val = target_point - point_to_align - buff * np.array(direction)
         shift_val = shift_val * abs(np.sign(direction))
@@ -1101,7 +758,7 @@ class OpenGLMobject:
         return self
 
     def shift_onto_screen(self, **kwargs):
-        space_lengths = [config["frame_x_radius"], config["frame_y_radius"]]
+        space_lengths = [FRAME_X_RADIUS, FRAME_Y_RADIUS]
         for vect in UP, DOWN, LEFT, RIGHT:
             dim = np.argmax(np.abs(vect))
             buff = kwargs.get("buff", DEFAULT_MOBJECT_TO_EDGE_BUFFER)
@@ -1112,13 +769,13 @@ class OpenGLMobject:
         return self
 
     def is_off_screen(self):
-        if self.get_left()[0] > config["frame_x_radius"]:
+        if self.get_left()[0] > FRAME_X_RADIUS:
             return True
-        if self.get_right()[0] < -config["frame_x_radius"]:
+        if self.get_right()[0] < -FRAME_X_RADIUS:
             return True
-        if self.get_bottom()[1] > config["frame_y_radius"]:
+        if self.get_bottom()[1] > FRAME_Y_RADIUS:
             return True
-        if self.get_top()[1] < -config["frame_y_radius"]:
+        if self.get_top()[1] < -FRAME_Y_RADIUS:
             return True
         return False
 
@@ -1151,12 +808,8 @@ class OpenGLMobject:
     def set_width(self, width, stretch=False, **kwargs):
         return self.rescale_to_fit(width, 0, stretch=stretch, **kwargs)
 
-    scale_to_fit_width = set_width
-
     def set_height(self, height, stretch=False, **kwargs):
         return self.rescale_to_fit(height, 1, stretch=stretch, **kwargs)
-
-    scale_to_fit_height = set_height
 
     def set_depth(self, depth, stretch=False, **kwargs):
         return self.rescale_to_fit(depth, 2, stretch=stretch, **kwargs)
@@ -1219,27 +872,50 @@ class OpenGLMobject:
         curr_vect = curr_end - curr_start
         if np.all(curr_vect == 0):
             raise Exception("Cannot position endpoints of closed loop")
-        target_vect = np.array(end) - np.array(start)
-        axis = (
-            normalize(np.cross(curr_vect, target_vect))
-            if np.linalg.norm(np.cross(curr_vect, target_vect)) != 0
-            else OUT
-        )
+        target_vect = end - start
         self.scale(
             np.linalg.norm(target_vect) / np.linalg.norm(curr_vect),
             about_point=curr_start,
         )
         self.rotate(
-            angle_between_vectors(curr_vect, target_vect),
-            about_point=curr_start,
-            axis=axis,
+            angle_of_vector(target_vect) - angle_of_vector(curr_vect),
         )
-        self.shift(start - curr_start)
+        self.rotate(
+            np.arctan2(curr_vect[2], np.linalg.norm(curr_vect[:2]))
+            - np.arctan2(target_vect[2], np.linalg.norm(target_vect[:2])),
+            axis=np.array([-target_vect[1], target_vect[0], 0]),
+        )
+        self.shift(start - self.get_start())
         return self
 
     # Color functions
 
-    def set_rgba_array(self, color=None, opacity=None, name="rgbas", recurse=True):
+    def set_rgba_array(self, rgba_array, name="rgbas", recurse=False):
+        for mob in self.get_family(recurse):
+            mob.data[name] = np.array(rgba_array)
+        return self
+
+    def set_color_by_rgba_func(self, func, recurse=True):
+        """
+        Func should take in a point in R3 and output an rgba value
+        """
+        for mob in self.get_family(recurse):
+            rgba_array = [func(point) for point in mob.get_points()]
+            mob.set_rgba_array(rgba_array)
+        return self
+
+    def set_color_by_rgb_func(self, func, opacity=1, recurse=True):
+        """
+        Func should take in a point in R3 and output an rgb value
+        """
+        for mob in self.get_family(recurse):
+            rgba_array = [[*func(point), opacity] for point in mob.get_points()]
+            mob.set_rgba_array(rgba_array)
+        return self
+
+    def set_rgba_array_by_color(
+        self, color=None, opacity=None, name="rgbas", recurse=True
+    ):
         if color is not None:
             rgbs = np.array([color_to_rgb(c) for c in listify(color)])
         if opacity is not None:
@@ -1265,8 +941,8 @@ class OpenGLMobject:
         return self
 
     def set_color(self, color, opacity=None, recurse=True):
-        self.set_rgba_array(color, opacity, recurse=False)
-        # Recurse to submobjects differently from how set_rgba_array
+        self.set_rgba_array_by_color(color, opacity, recurse=False)
+        # Recurse to submobjects differently from how set_rgba_array_by_color
         # in case they implement set_color differently
         if recurse:
             for submob in self.submobjects:
@@ -1274,17 +950,17 @@ class OpenGLMobject:
         return self
 
     def set_opacity(self, opacity, recurse=True):
-        self.set_rgba_array(color=None, opacity=opacity, recurse=False)
+        self.set_rgba_array_by_color(color=None, opacity=opacity, recurse=False)
         if recurse:
             for submob in self.submobjects:
                 submob.set_opacity(opacity, recurse=True)
         return self
 
     def get_color(self):
-        return rgb_to_hex(self.rgbas[0, :3])
+        return rgb_to_hex(self.data["rgbas"][0, :3])
 
     def get_opacity(self):
-        return self.rgbas[0, 3]
+        return self.data["rgbas"][0, 3]
 
     def set_color_by_gradient(self, *colors):
         self.set_submobject_colors_by_gradient(*colors)
@@ -1308,19 +984,19 @@ class OpenGLMobject:
         self.set_opacity(1.0 - darkness, recurse=recurse)
 
     def get_gloss(self):
-        return self.gloss
+        return self.uniforms["gloss"]
 
     def set_gloss(self, gloss, recurse=True):
         for mob in self.get_family(recurse):
-            mob.gloss = gloss
+            mob.uniforms["gloss"] = gloss
         return self
 
     def get_shadow(self):
-        return self.shadow
+        return self.uniforms["shadow"]
 
     def set_shadow(self, shadow, recurse=True):
         for mob in self.get_family(recurse):
-            mob.shadow = shadow
+            mob.uniforms["shadow"] = shadow
         return self
 
     # Background rectangle
@@ -1328,7 +1004,7 @@ class OpenGLMobject:
     def add_background_rectangle(self, color=None, opacity=0.75, **kwargs):
         # TODO, this does not behave well when the mobject has points,
         # since it gets displayed on top
-        from ..mobject.shape_matchers import BackgroundRectangle
+        from manim.mobject.shape_matchers import BackgroundRectangle
 
         self.background_rectangle = BackgroundRectangle(
             self, color=color, fill_opacity=opacity, **kwargs
@@ -1435,17 +1111,17 @@ class OpenGLMobject:
 
     def get_start(self):
         self.throw_error_if_no_points()
-        return np.array(self.points[0])
+        return np.array(self.get_points()[0])
 
     def get_end(self):
         self.throw_error_if_no_points()
-        return np.array(self.points[-1])
+        return np.array(self.get_points()[-1])
 
     def get_start_and_end(self):
         return self.get_start(), self.get_end()
 
     def point_from_proportion(self, alpha):
-        points = self.points
+        points = self.get_points()
         i, subalpha = integer_interpolate(0, len(points) - 1, alpha)
         return interpolate(points[i], points[i + 1], subalpha)
 
@@ -1457,11 +1133,11 @@ class OpenGLMobject:
         template = self.copy()
         template.set_submobjects([])
         alphas = np.linspace(0, 1, n_pieces + 1)
-        return OpenGLGroup(
-            *(
+        return Group(
+            *[
                 template.copy().pointwise_become_partial(self, a1, a2)
                 for a1, a2 in zip(alphas[:-1], alphas[1:])
-            )
+            ]
         )
 
     def get_z_index_reference_point(self):
@@ -1523,7 +1199,7 @@ class OpenGLMobject:
         return self
 
     def get_group_class(self):
-        return OpenGLGroup
+        return Group
 
     # Alignment
 
@@ -1533,7 +1209,7 @@ class OpenGLMobject:
 
     def align_data(self, mobject):
         # In case any data arrays get resized when aligned to shader data
-        # self.refresh_shader_data()
+        self.refresh_shader_data()
         for mob1, mob2 in zip(self.get_family(), mobject.get_family()):
             # Separate out how points are treated so that subclasses
             # can handle that case differently if they choose
@@ -1591,7 +1267,7 @@ class OpenGLMobject:
         new_submobs = []
         for submob, sf in zip(self.submobjects, split_factors):
             new_submobs.append(submob)
-            for _ in range(1, sf):
+            for k in range(1, sf):
                 new_submob = submob.copy()
                 # If the submobject is at all transparent, then
                 # make the copy completely transparent
@@ -1687,19 +1363,19 @@ class OpenGLMobject:
         def wrapper(self):
             for mob in self.get_family():
                 func(mob)
-                # mob.refresh_shader_wrapper_id()
+                mob.refresh_shader_wrapper_id()
             return self
 
         return wrapper
 
     @affects_shader_info_id
     def fix_in_frame(self):
-        self.is_fixed_in_frame = 1.0
+        self.uniforms["is_fixed_in_frame"] = 1.0
         return self
 
     @affects_shader_info_id
     def unfix_from_frame(self):
-        self.is_fixed_in_frame = 0.0
+        self.uniforms["is_fixed_in_frame"] = 0.0
         return self
 
     @affects_shader_info_id
@@ -1756,22 +1432,27 @@ class OpenGLMobject:
 
     # For shader data
 
-    # def refresh_shader_wrapper_id(self):
-    #     self.shader_wrapper.refresh_id()
-    #     return self
+    def init_shader_data(self):
+        # TODO, only call this when needed?
+        self.shader_data = np.zeros(len(self.get_points()), dtype=self.shader_dtype)
+        self.shader_indices = None
+        self.shader_wrapper = ShaderWrapper(
+            vert_data=self.shader_data,
+            shader_folder=self.shader_folder,
+            texture_paths=self.texture_paths,
+            depth_test=self.depth_test,
+            render_primitive=self.render_primitive,
+        )
+
+    def refresh_shader_wrapper_id(self):
+        self.shader_wrapper.refresh_id()
+        return self
 
     def get_shader_wrapper(self):
-        from ..renderer.shader_wrapper import ShaderWrapper
-
-        self.shader_wrapper = ShaderWrapper(
-            vert_data=self.get_shader_data(),
-            vert_indices=self.get_shader_vert_indices(),
-            uniforms=self.get_shader_uniforms(),
-            depth_test=self.depth_test,
-            texture_paths=self.texture_paths,
-            render_primitive=self.render_primitive,
-            shader_folder=self.__class__.shader_folder,
-        )
+        self.shader_wrapper.vert_data = self.get_shader_data()
+        self.shader_wrapper.vert_indices = self.get_shader_vert_indices()
+        self.shader_wrapper.uniforms = self.get_shader_uniforms()
+        self.shader_wrapper.depth_test = self.depth_test
         return self.shader_wrapper
 
     def get_shader_wrapper_list(self):
@@ -1782,7 +1463,7 @@ class OpenGLMobject:
         batches = batch_by_property(shader_wrappers, lambda sw: sw.get_id())
 
         result = []
-        for wrapper_group, _ in batches:
+        for wrapper_group, sid in batches:
             shader_wrapper = wrapper_group[0]
             if not shader_wrapper.is_valid():
                 continue
@@ -1805,9 +1486,9 @@ class OpenGLMobject:
     def get_resized_shader_data_array(self, length):
         # If possible, try to populate an existing array, rather
         # than recreating it each frame
-        points = self.points
-        shader_data = np.zeros(len(points), dtype=self.shader_dtype)
-        return shader_data
+        if len(self.shader_data) != length:
+            self.shader_data = resize_array(self.shader_data, length)
+        return self.shader_data
 
     def read_data_to_shader(self, shader_data, shader_data_key, data_key):
         if data_key in self.locked_data_keys:
@@ -1836,7 +1517,7 @@ class OpenGLMobject:
         To learn more visit https://www.quirksmode.org/js/events_order.html
 
         Event Callback Argument is a callable function taking two arguments:
-            1. Mobject
+            1. OpenGLMobject
             2. EventData
     """
 
@@ -1867,7 +1548,7 @@ class OpenGLMobject:
         return self.event_listners
 
     def get_family_event_listners(self):
-        return list(it.chain(*(sm.get_event_listners() for sm in self.get_family())))
+        return list(it.chain(*[sm.get_event_listners() for sm in self.get_family()]))
 
     def get_has_event_listner(self):
         return any(mob.get_event_listners() for mob in self.get_family())
@@ -1918,7 +1599,9 @@ class OpenGLMobject:
 
     def throw_error_if_no_points(self):
         if not self.has_points():
-            message = "Cannot call Mobject.{} " + "for a Mobject with no points"
+            message = (
+                "Cannot call OpenGLMobject.{} " + "for a OpenGLMobject with no points"
+            )
             caller_name = sys._getframe(1).f_code.co_name
             raise Exception(message.format(caller_name))
 
@@ -1926,7 +1609,7 @@ class OpenGLMobject:
 class OpenGLGroup(OpenGLMobject):
     def __init__(self, *mobjects, **kwargs):
         if not all([isinstance(m, OpenGLMobject) for m in mobjects]):
-            raise Exception("All submobjects must be of type Mobject")
+            raise Exception("All submobjects must be of type OpenGLMobject")
         OpenGLMobject.__init__(self, **kwargs)
         self.add(*mobjects)
 
@@ -1947,7 +1630,7 @@ class OpenGLPoint(OpenGLMobject):
         return self.artificial_height
 
     def get_location(self):
-        return self.points[0].copy()
+        return self.get_points()[0].copy()
 
     def get_bounding_box_point(self, *args, **kwargs):
         return self.get_location()
