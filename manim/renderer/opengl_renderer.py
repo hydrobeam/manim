@@ -373,7 +373,6 @@ class OpenGLRenderer:
                 self.skip_animations = True
                 raise EndSceneEarlyException()
 
-    @handle_caching_play
     @handle_play_like_call
     def play(self, scene, *args, **kwargs):
         # TODO: Handle data locking / unlocking.
