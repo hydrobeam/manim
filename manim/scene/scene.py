@@ -13,7 +13,7 @@ from manim.animation.animation import prepare_animation
 from manim.animation.transform import MoveToTarget
 from manim.camera.camera import Camera
 from manim.constants import DEFAULT_WAIT_TIME
-from manim.event_handler import EVENT_DISPATCHER
+from manim.event_handler.event_dispatcher import EVENT_DISPATCHER
 from manim.event_handler.event_type import EventType
 from manim.mobject.opengl_mobject import OpenGLMobject, OpenGLPoint
 from manim.scene.scene_file_writer import SceneFileWriter
