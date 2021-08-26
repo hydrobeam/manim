@@ -97,15 +97,12 @@ def render(
     config.digest_args(click_args)
     file = args["file"]
     if config.renderer == "opengl":
-        from manim.renderer.opengl_renderer import OpenGLRenderer
-
         for SceneClass in scene_classes_from_file(file):
             try:
-                renderer = OpenGLRenderer()
                 while True:
                     scene_classes = scene_classes_from_file(file)
                     SceneClass = scene_classes[0]
-                    scene = SceneClass(renderer)
+                    scene = SceneClass()
                     status = scene.run()
                     if status:
                         continue
